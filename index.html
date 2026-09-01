@@ -1016,7 +1016,7 @@ table.dt tfoot td{font-weight:700;border-top:1px solid var(--line);border-bottom
 }
 
 </style>
-<script>const DEMO_BUILD = true;const BUILD_ID = "2026-09-01.56bde1-demo";</script>
+<script>const DEMO_BUILD = true;const BUILD_ID = "2026-09-01.fe7e78-demo";</script>
 <script>/* @preserve
  * Leaflet 1.9.4, a JS library for interactive maps. https://leafletjs.com
  * (c) 2010-2023 Vladimir Agafonkin, (c) 2010-2011 CloudMade
@@ -6269,6 +6269,156 @@ function wirePinDrag(){
     });
   });
 }
+
+/* ============================================================
+   MERGE AN EXPORT INTO THIS DEVICE                  (added 1 Sep 2026)
+
+   The existing Import replaces everything — it rebuilds S from the defaults plus
+   the file, so whatever was on this device is gone. That is correct for moving a
+   job between phones and wrong for two people working the same job.
+
+   Merge combines instead. The unit of decision is the WORK POINT, not the field:
+   for any point both sides have touched, the side whose last history entry is
+   newer wins that point whole. Half-merging one point — his photos with your
+   units — would produce a record that never existed, so it is not done.
+
+   NOT SYNC. Manual, one direction at a time, and if two people work the same
+   point on the same day the older edit is discarded, silently except for the
+   report. Fine for proving the flow. Not fine for running a crew.
+   ============================================================ */
+
+function lastTouch(r){
+  if (!r) return 0;
+  let t = 0;
+  const at = v => {                       // Date.parse(0) is the year 2000 — guard it
+    if (!v || typeof v !== 'string') return 0;
+    const n = Date.parse(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  (r.hist || []).forEach(h => { const v = at(h.ts); if (v > t) t = v; });
+  ['submittedAt','approvedAt','billedAt','assignedAt','ratesLockedAt'].forEach(k => {
+    const v = at(r[k]); if (v > t) t = v;
+  });
+  return t;
+}
+
+function mergeState(inc){
+  if (!inc || typeof inc !== 'object') { toast('That file is not a CPE export','bad'); return; }
+  const rep = { newPts:0, theirs:0, mine:0, days:0, fieldPts:0, docs:0, anchor:false };
+
+  /* ---- work points: newest last-touch wins the whole point ---- */
+  Object.keys(inc.pts || {}).forEach(id => {
+    const theirs = inc.pts[id], mineR = S.pts[id];
+    const mineT = lastTouch(mineR);
+    // an empty auto-created record counts as "I had nothing on this point"
+    if (!mineR || mineT === 0){ S.pts[id] = theirs; rep.newPts++; return; }
+    if (lastTouch(theirs) > mineT){ S.pts[id] = theirs; rep.theirs++; }
+    else rep.mine++;
+  });
+
+  /* ---- takeoff corrections follow whoever won the point ---- */
+  Object.keys(inc.unitEdits || {}).forEach(id => {
+    if (!S.unitEdits[id] || S.pts[id] === (inc.pts || {})[id]) S.unitEdits[id] = inc.unitEdits[id];
+  });
+
+  /* ---- time: keyed date|crew, so two crews never collide ---- */
+  Object.keys(inc.days || {}).forEach(k => {
+    const t = inc.days[k], m = S.days[k];
+    if (!m){ S.days[k] = t; rep.days++; return; }
+    const tn = (t.visits||[]).length, mn = (m.visits||[]).length;
+    if (Date.parse(t.endedAt||0) > Date.parse(m.endedAt||0) || tn > mn){ S.days[k] = t; rep.days++; }
+  });
+
+  /* ---- field-created points: union by id ---- */
+  const have = new Set((S.fieldPts||[]).map(f => f.id));
+  (inc.fieldPts || []).forEach(f => { if (!have.has(f.id)){ S.fieldPts.push(f); rep.fieldPts++; } });
+
+  /* ---- work-order documents: union by work order ---- */
+  Object.keys(inc.docs || {}).forEach(wo => {
+    S.docs[wo] = S.docs[wo] || [];
+    const seen = new Set(S.docs[wo].map(d => d.name + '|' + (d.at||'')));
+    (inc.docs[wo] || []).forEach(d => {
+      if (!seen.has(d.name + '|' + (d.at||''))){ S.docs[wo].push(d); rep.docs++; }
+    });
+  });
+
+  /* ---- audit log: union, dedupe, keep chronological ---- */
+  const key = e => e.ts + '|' + (e.id||'') + '|' + e.what;
+  const seenLog = new Set((S.log||[]).map(key));
+  (inc.log || []).forEach(e => { if (!seenLog.has(key(e))) S.log.push(e); });
+  S.log.sort((a,b) => a.ts.localeCompare(b.ts));
+  while (S.log.length > 400) S.log.shift();
+
+  /* ---- the map anchor: take a field calibration over an office one ---- */
+  const ig = (inc.settings || {}).geo, mg = S.settings.geo;
+  if (ig && ig.calibrated && (!mg.calibrated || Date.parse(ig.calibrated.at) > Date.parse(mg.calibrated.at))){
+    S.settings.geo = ig; rep.anchor = true;
+  }
+  /* everything else in settings stays yours — role, crew, filter, basemap */
+
+  /* ---- rate overrides: the office owns the schedule ---- */
+  Object.keys((inc.rates || {}).unit || {}).forEach(c => {
+    if (S.rates.unit[c] === undefined) S.rates.unit[c] = inc.rates.unit[c];
+  });
+
+  restoreFieldPoints(); applyUnitEdits(); applyRateOverrides();
+  save(); drawPins(); renderAll();
+
+  openSheet('Merged', `
+    <p class="hint">Combined into what was already on this device. Nothing was replaced wholesale.</p>
+    <div style="height:10px"></div>
+    <table class="tbl"><tbody>
+      <tr><td>Work points added</td><td class="r"><b>${rep.newPts}</b></td></tr>
+      <tr><td>Points where their copy was newer</td><td class="r"><b>${rep.theirs}</b></td></tr>
+      <tr><td>Points where yours was newer, kept</td><td class="r"><b>${rep.mine}</b></td></tr>
+      <tr><td>Crew days added or extended</td><td class="r"><b>${rep.days}</b></td></tr>
+      <tr><td>Field-created points added</td><td class="r"><b>${rep.fieldPts}</b></td></tr>
+      <tr><td>Documents added</td><td class="r"><b>${rep.docs}</b></td></tr>
+      <tr><td>Map anchor</td><td class="r"><b>${rep.anchor ? 'took theirs' : 'kept yours'}</b></td></tr>
+    </tbody></table>
+    <p class="hint" style="margin-top:12px">Where both sides had touched the same work point, the one with the
+      later entry won that point in full. ${rep.mine ? `<b>${rep.mine}</b> of your points were newer and were left alone.` : ''}</p>
+    <div style="height:10px"></div>
+    <button class="btn pri wide" onclick="closeSheet()">Done</button>`);
+  toast(`Merged — ${rep.newPts + rep.theirs} points in`, 'ok');
+}
+
+function mergeFilePick(){
+  let el = document.getElementById('jsonmerge');
+  if (!el){
+    el = document.createElement('input');
+    el.type = 'file'; el.id = 'jsonmerge'; el.accept = '.json,application/json';
+    el.style.display = 'none';
+    document.body.appendChild(el);
+    el.onchange = ev => {
+      const f = ev.target.files[0]; ev.target.value = '';
+      if (!f) return;
+      f.text().then(t => {
+        const j = JSON.parse(t);
+        mergeState(j.state || j);
+      }).catch(() => toast('That file is not a CPE export','bad'));
+    };
+  }
+  el.click();
+}
+
+/* add the button next to Import, without touching the Setup markup */
+(function () {
+  const base = window.renderSet;
+  if (typeof base !== 'function') return;
+  window.renderSet = function () {
+    base.apply(this, arguments);
+    try {
+      const imp = document.querySelector('#v-set button[onclick*="jsonin"]');
+      if (imp && !document.getElementById('mergebtn')) {
+        const b = document.createElement('button');
+        b.id = 'mergebtn'; b.className = 'btn'; b.textContent = 'Merge from a file';
+        b.onclick = mergeFilePick;
+        imp.insertAdjacentElement('afterend', b);
+      }
+    } catch (e) { console.warn('merge button', e); }
+  };
+})();
 
 /* ============================================================
    DOCUMENTS — asbuilt / daily DFR (print to PDF)
