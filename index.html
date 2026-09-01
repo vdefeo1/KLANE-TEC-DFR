@@ -1016,7 +1016,7 @@ table.dt tfoot td{font-weight:700;border-top:1px solid var(--line);border-bottom
 }
 
 </style>
-<script>const DEMO_BUILD = true;const BUILD_ID = "2026-09-01.850248-demo";</script>
+<script>const DEMO_BUILD = true;const BUILD_ID = "2026-09-01.1961ab-demo";</script>
 <script>/* @preserve
  * Leaflet 1.9.4, a JS library for interactive maps. https://leafletjs.com
  * (c) 2010-2023 Vladimir Agafonkin, (c) 2010-2011 CloudMade
@@ -3199,6 +3199,7 @@ function unitRow(p,u,can){
           added ? ' <span style="color:var(--acc2,#a5f3fc)">· added at pre-con</span>'
                 : (u.reEst ? ' <span style="color:var(--dim2)">· re-estimated</span>' : '')}</div>
         <div class="desc">${esc(u.desc)}</div>
+        ${specLine(u)}
         <div class="meta">est ${u.estQty} ${u.uom}${canSeeMoney()?` @ ${money(rt)}${
           e.locked ? ' <span style="color:var(--dim2)">locked at approval</span>' : ''}`:''}</div>
       </div>
@@ -6629,6 +6630,106 @@ function photoKindNote(id){
 }
 
 /* ============================================================
+   SPEC BOOK REFERENCE                               (added 1 Sep 2026)
+
+   The spec number was already on the unit row and in the asbuilt's Spec column.
+   What it did not say is which document to open. "9-11 F3" means drawing 9-11,
+   framing variant F3, in Section 9 — GrsOH-09-PriFraming.pdf. A crew standing at
+   a pole should not have to know that from memory.
+
+   These are TECO's OVERHEAD standards, the GrsOH-NN set CPE holds in SharePoint
+   under TECO - CPE - RFP / TECO SPEC. Several sections are old — Section 9 is
+   dated January 2021 and a dozen others are March 2017 — so the section titles
+   here are what CPE has on file, not a guarantee TECO has not revised them.
+
+   Deliberately NOT applied to underground units. UG Spec 6-3 is a manhole; OH
+   Section 6 is pole setting. Same digits, different book, and CPE does not hold
+   the underground set. Sending a crew to the wrong document is worse than
+   sending them to none, so UG units say plainly that the book is not on file.
+   ============================================================ */
+
+const SPEC_BOOK = {
+  1:['General Information','GrsOH-01-Geninfo'],
+  2:['Standard Procedure Bulletins','GrsOH-02-StdProcedBull'],
+  3:['Conductor Clearances','GrsOH-03-Clearances'],
+  4:['Conductor Sag Tables','GrsOH-04-SagTables'],
+  5:['Material Design','GrsOH-05-MtrlDsgn'],
+  6:['Poles — Setting, Marking and Bracing','GrsOH-06-PoleSetTagRepair'],
+  7:['Guying','GrsOH-07-Guying'],
+  8:['Grounding','GrsOH-08-Grounding'],
+  9:['Framing Primary Lines','GrsOH-09-PriFraming'],
+  10:['Framing Secondary Lines','GrsOH-10-SecFraming'],
+  11:['Transformers','GrsOH-11-Transformers'],
+  12:['Regulators and Boosters','GrsOH-12-Regulators'],
+  13:['Capacitors','GrsOH-13-Capacitors'],
+  14:['Protection','GrsOH-14-Protection'],
+  15:['Double Circuit Construction','GrsOH-15-DblCircFraming'],
+  16:['Services','GrsOH-16-Services'],
+  17:['Street Light / Area Light','GrsOH-17-Streetlight'],
+  18:['Metering','GrsOH-18-Metering'],
+  19:['Switches','GrsOH-19-Switches'],
+  20:['Avian Protection','GrsOH-20-AvianProtect'],
+  21:['Underbuilt Distribution','GrsOH-21-Underbuilt'],
+  22:['Cable Terminations','GrsOH-22-Termination'],
+  25:['Operating Procedures','GrsOH-25-Operating'],
+  26:['Work Area Protection','GrsOH-26-WrkAreaProt'],
+  30:['Substation','GrsOH-30-Substation'],
+  37:['Transmission — Standard Procedure Bulletins','GrsOH-37-XmissionStdProc'],
+  38:['Transmission — Framing','GrsOH-38-XmissionFraming']
+};
+
+/** { sec, title, file } for a unit's spec, or null when there is nothing to point at.
+
+    Deliberately conservative. Three things in the spec field are NOT spec-book
+    references and must not be mapped:
+      · conductor sizes — "2-2-2-2N AAAC", "3-336 ACSR", "3C-1000 ALJCN"
+      · bare words — "FUSE", "N/A"
+      · underground references — same digits, different book, which CPE does not hold
+    Getting one of these wrong sends a crew to the wrong drawing, so anything that
+    does not look unambiguously like section-dash-drawing is left as plain text. */
+const SPEC_CONDUCTOR = /(AAAC|ACSR|ALJCN|AAC|MCM|CU\b|AL\b)/i;
+function isUGUnit(u){
+  if (String(u.code || '').toUpperCase().startsWith('UG-')) return true;
+  const cat = CAT.find(x => String(x.code) === String(u.code));
+  if (cat && typeof unitClass === 'function' && unitClass(cat) === 'UG') return true;
+  if (cat && /Section (2|3) - (Manholes|Pads)/i.test(cat.section || '')) return true;
+  return false;
+}
+function specRef(u){
+  if (!u) return null;
+  const raw = String(u.spec || '').trim();
+  if (!raw || raw === '—' || raw.toUpperCase() === 'N/A') return null;
+  if (SPEC_CONDUCTOR.test(raw)) return { raw, sec:null, title:null, file:null };
+
+  // section-dash-drawing, optionally prefixed SIM and suffixed with a framing variant
+  const m = raw.match(/^(?:SIM\s+)?(\d{1,2})[-:](\d{1,3})(?:-(\d{1,3}))?(?:\s+[A-Z]\d?)?$/i);
+  if (!m) return { raw, sec:null, title:null, file:null };
+  const sec = Number(m[1]);
+
+  if (isUGUnit(u)) return { raw, sec, title:null, file:null, ug:true };
+  const b = SPEC_BOOK[sec];
+  return b ? { raw, sec, title:b[0], file:b[1] + '.pdf' } : { raw, sec, title:null, file:null };
+}
+
+/** one quiet line for the job card */
+function specLine(u){
+  const s = specRef(u);
+  if (!s) return '';
+  const body = s.ug
+    ? `underground spec — book not held by CPE`
+    : s.title ? `&sect;${s.sec} ${esc(s.title)}` : `section not in the spec book on file`;
+  return `<div class="meta" style="color:var(--dim2)">Spec ${esc(s.raw)} · ${body}</div>`;
+}
+
+/** the same thing for the asbuilt cell */
+function specCell(spec, code){
+  const s = specRef({ spec, code });
+  if (!s) return '';
+  if (!s.title) return esc(s.raw);
+  return `${esc(s.raw)}<br><span style="font-size:8px;color:#777">&sect;${s.sec} ${esc(s.title)}<br>${esc(s.file)}</span>`;
+}
+
+/* ============================================================
    DOCUMENTS — asbuilt / daily DFR (print to PDF)
    ============================================================ */
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -6649,7 +6750,7 @@ function unitTable(rows, foot){
   const $ = canSeeMoney();
   return `<div class="scroll"><table><thead><tr><th>Type</th><th>Code</th><th>Spec</th><th>Description</th><th>UOM</th>
     <th class="n">Est</th><th class="n">Built</th>${$?'<th class="n">Rate</th><th class="n">Amount</th>':''}<th>Memo</th></tr></thead>
-    <tbody>${rows.map(r => `<tr><td>${r.tag}</td><td>${r.code}</td><td>${esc(r.spec||'')}</td><td>${esc(r.desc)}</td>
+    <tbody>${rows.map(r => `<tr><td>${r.tag}</td><td>${r.code}</td><td>${specCell(r.spec, r.code)}</td><td>${esc(r.desc)}</td>
       <td>${esc(r.uom||'')}</td><td class="n">${r.est??''}</td><td class="n">${r.qty}</td>
       ${$?`<td class="n">${money(r.rate)}</td><td class="n">${money(r.amt)}</td>`:''}<td>${esc(r.note||'')}</td></tr>`).join('')}</tbody>
     ${$&&foot!=null?`<tfoot><tr><td colspan="8">Total</td><td class="n">${money(foot)}</td><td></td></tr></tfoot>`:''}</table></div>`;
